@@ -19,21 +19,15 @@ You run the services you need and compose them into a detection pipeline.
 ## Services
 
 Each service lives under [`images/`](images/) and is built and published
-independently by CI. secAnoD is being delivered incrementally; the table below
-tracks what is available today and what is planned.
+independently by CI. secAnoD is being delivered incrementally; the services
+available today are listed below, and more will be added as they land.
 
-| Service (image) | Subcomponent | Role | Status |
-|-----------------|--------------|------|--------|
-| **`mmt-image`** | mmt-probe + mmt-dpi + mmt-security | Capture & detection: DPI attribute extraction and LTL rule-based detection over PCAP/live traffic | ✅ Available |
-| `mmt-operator` | mmt-operator | Visualization: dashboards, stats/alert persistence, probe management | 🚧 Planned |
-| `llm-detection-engine` | LLM Detection Engine | Anomaly classification, APT detection, incident prediction, LTL rule generation | 🚧 Planned |
-| `api-gateway` | API Gateway | FastAPI REST endpoints for alerts/stats/config; STIX egress to secAISOAR | 🚧 Planned |
-| `xai-module` | XAI Module | Root-cause analysis and human-readable explanations | 🚧 Planned |
-| `event-store` | Event Store | Time-series storage for baselines, alerts and training data | 🚧 Planned |
+| Service (image) | Subcomponent | Role |
+|-----------------|--------------|------|
+| **`mmt-image`** | mmt-probe + mmt-dpi + mmt-security | Capture & detection: DPI attribute extraction and LTL rule-based detection over PCAP/live traffic |
 
-Service and image names for planned components are indicative and may change as
-they land. See [images/README.md](images/README.md) for the directory layout and
-how a new service is added.
+See [images/README.md](images/README.md) for the directory layout and how a new
+service is added.
 
 ---
 
