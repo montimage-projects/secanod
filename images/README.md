@@ -27,11 +27,12 @@ images/
    - `.gitlab-ci.yml` → the `.image_matrix` list (shared by the build and
      publish jobs)
 
-Both CIs build every listed image *natively on each architecture*
-(linux/amd64 + linux/arm64), run its smoke test on every merge/PR, and publish a
-single multi-arch manifest to their respective container registries (GHCR /
-GitLab Registry) on the default branch and on `v*` tags. The GitLab arm64 build
-runs on a runner tagged `arm64`.
+Both CIs build every listed image for **linux/amd64 + linux/arm64**, run its
+smoke test on every merge/PR, and publish a single multi-arch manifest to their
+respective container registries (GHCR / GitLab Registry) on the default branch
+and on `v*` tags. GitHub builds each architecture natively on a per-arch runner;
+GitLab builds arm64 via QEMU emulation on the amd64 runner (its runners are
+amd64-only), so its arm64 build is slower and runs only on publish.
 
 ## Current services
 
