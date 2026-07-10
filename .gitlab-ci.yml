@@ -1,8 +1,12 @@
 # GitLab CI — mirrors .github/workflows/images.yml.
 #
 # Builds, smoke-tests and (on default branch / tags) publishes the MMT service
-# images under images/*. Adding a new service is a one-line change to the
-# parallel:matrix list.
+# images under images/*. Each image is built *natively* on a per-architecture
+# runner (amd64 on the default runner, arm64 on a runner tagged `arm64`), pushed
+# by digest, then merged into a single multi-arch manifest so that `docker pull`
+# works on both linux/amd64 and linux/arm64 hosts.
+#
+# Adding a new service is a one-line change to the `.image_matrix` list below.
 
 stages:
   - build
@@ -18,25 +22,57 @@ variables:
   services:
     - docker:27-dind
   before_script:
-    # bash + coreutils/findutils are needed by the smoke-test script
-    - apk add --no-cache bash coreutils findutils
+    # bash + coreutils/findutils are needed by the smoke-test script;
+    # jq parses buildx's metadata; docker-cli-buildx provides `docker buildx`.
+    - apk add --no-cache bash coreutils findutils jq docker-cli-buildx
 
-# --- build + smoke test (runs on branches, tags and merge requests) ---
-build_and_test:
-  stage: build
-  extends: .docker
+# One entry per service image — shared by the build and publish jobs.
+.image_matrix:
   parallel:
     matrix:
-      - IMAGE: mmt-image
+      - IMAGE: [mmt-image]
+
+# --- build + smoke test each image natively, and push it by digest ----------
+# Runs on branches, tags and merge requests. The push-by-digest step only fires
+# on the default branch and on tags (never on MRs / feature branches).
+.build_and_test:
+  stage: build
+  extends: [.docker, .image_matrix]
   script:
-    - docker build -t "$IMAGE:ci" "images/$IMAGE"
     - |
+      set -eu
+      LOCAL_TAG="$IMAGE:ci-$ARCH"
+      mkdir -p "digests/$IMAGE"
+      # A docker-container builder is required for push-by-digest output; it also
+      # keeps the build cache so the second (push) build reuses the first.
+      docker buildx create --use --driver docker-container --name mmtbuilder >/dev/null 2>&1 \
+        || docker buildx use mmtbuilder
+
+      # Native single-arch build, loaded into the daemon for the smoke test.
+      docker buildx build --load -t "$LOCAL_TAG" "images/$IMAGE"
+
       if [ -x "images/$IMAGE/tests/smoke-test.sh" ]; then
-        IMAGE="$IMAGE:ci" bash "images/$IMAGE/tests/smoke-test.sh"
+        IMAGE="$LOCAL_TAG" bash "images/$IMAGE/tests/smoke-test.sh"
       else
         echo "No smoke-test.sh for $IMAGE, running --help only"
-        docker run --rm "$IMAGE:ci" --help
+        docker run --rm "$LOCAL_TAG" --help
       fi
+
+      if [ "${CI_COMMIT_BRANCH:-}" = "$CI_DEFAULT_BRANCH" ] || [ -n "${CI_COMMIT_TAG:-}" ]; then
+        echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+        docker buildx build \
+          --platform "linux/$ARCH" \
+          --metadata-file "meta-$IMAGE-$ARCH.json" \
+          --output "type=image,name=$CI_REGISTRY_IMAGE/$IMAGE,push-by-digest=true,name-canonical=true,push=true" \
+          "images/$IMAGE"
+        jq -r '."containerimage.digest"' "meta-$IMAGE-$ARCH.json" > "digests/$IMAGE/$ARCH"
+        echo "pushed linux/$ARCH by digest: $(cat "digests/$IMAGE/$ARCH")"
+      fi
+  artifacts:
+    paths:
+      - digests/
+    expire_in: 1 day
+    when: on_success
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: [images/**/*, .gitlab-ci.yml]
@@ -44,23 +80,47 @@ build_and_test:
     - if: '$CI_COMMIT_BRANCH'
       changes: [images/**/*, .gitlab-ci.yml]
 
-# --- publish to the GitLab Container Registry (default branch & tags only) ---
+build:amd64:
+  extends: [.build_and_test]
+  variables:
+    ARCH: amd64
+  # amd64 runs on the default (untagged) runner.
+
+build:arm64:
+  extends: [.build_and_test]
+  variables:
+    ARCH: arm64
+  tags:
+    - arm64
+
+# --- merge the per-arch digests into one multi-arch manifest and tag it -----
+# Default branch & tags only (never on MRs).
 publish:
   stage: publish
-  extends: .docker
-  parallel:
-    matrix:
-      - IMAGE: mmt-image
+  extends: [.docker, .image_matrix]
+  needs:
+    - build:amd64
+    - build:arm64
   script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    - docker build -t "$CI_REGISTRY_IMAGE/$IMAGE:latest" "images/$IMAGE"
     - |
-      # tag as the commit SHA and, on a tag pipeline, the tag name
-      docker tag "$CI_REGISTRY_IMAGE/$IMAGE:latest" "$CI_REGISTRY_IMAGE/$IMAGE:$CI_COMMIT_SHORT_SHA"
-      if [ -n "$CI_COMMIT_TAG" ]; then
-        docker tag "$CI_REGISTRY_IMAGE/$IMAGE:latest" "$CI_REGISTRY_IMAGE/$IMAGE:$CI_COMMIT_TAG"
+      set -eu
+      echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+      IMG="$CI_REGISTRY_IMAGE/$IMAGE"
+
+      # tags: always latest + short SHA; also the tag name on tag pipelines
+      TAGS="-t $IMG:latest -t $IMG:$CI_COMMIT_SHORT_SHA"
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        TAGS="$TAGS -t $IMG:$CI_COMMIT_TAG"
       fi
-      docker push --all-tags "$CI_REGISTRY_IMAGE/$IMAGE"
+
+      # one source ref per per-arch digest produced by the build jobs
+      REFS=""
+      for f in "digests/$IMAGE"/*; do
+        REFS="$REFS $IMG@$(cat "$f")"
+      done
+
+      docker buildx imagetools create $TAGS $REFS
+      docker buildx imagetools inspect "$IMG:latest"
   rules:
     - if: '$CI_COMMIT_TAG'
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'

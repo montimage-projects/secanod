@@ -22,12 +22,16 @@ images/
 2. (Recommended) add `tests/smoke-test.sh` that takes an image tag as `$1` /
    `$IMAGE` and exits non-zero on failure.
 3. Register the service in both pipelines by adding its name to the matrix:
-   - `.github/workflows/images.yml` → `strategy.matrix.image`
-   - `.gitlab-ci.yml` → `parallel.matrix.IMAGE` (in both `build_and_test` and `publish`)
+   - `.github/workflows/images.yml` → the `image` matrix (in both the `build`
+     and `merge` jobs)
+   - `.gitlab-ci.yml` → the `.image_matrix` list (shared by the build and
+     publish jobs)
 
-Both CIs build every listed image, run its smoke test on every merge/PR, and
-publish to their respective container registries (GHCR / GitLab Registry) on the
-default branch and on `v*` tags.
+Both CIs build every listed image *natively on each architecture*
+(linux/amd64 + linux/arm64), run its smoke test on every merge/PR, and publish a
+single multi-arch manifest to their respective container registries (GHCR /
+GitLab Registry) on the default branch and on `v*` tags. The GitLab arm64 build
+runs on a runner tagged `arm64`.
 
 ## Current services
 
