@@ -1,131 +1,170 @@
-# secAnoD
+# secAnoD — MMT service images
 
-**AI-driven Network Anomaly and Attack Detection** — a SECASSURED security service.
+**AI-driven Network Anomaly and Attack Detection** — a [SECASSURED](https://secureflow.assist.ro/secassured)
+security service.
 
-> Part of the [SECASSURED](https://secureflow.assist.ro/secassured) project (Horizon Europe, GA No. 101225858).
-> Reference architecture: [`secassured/architecture`](https://secureflow.assist.ro/secassured/architecture) — see chapter `111_secAnoD`.
+This repository packages Montimage's **MMT** toolchain as ready-to-run Docker
+services. Give a service a network capture; it runs deep packet inspection and
+rule-based detection and writes the results to a file or a streaming channel.
 
-- **Owner / developed by:** MONTIMAGE (MTI), NTNU, TECNALIA (TEC)
-- **Work package / tasks:** WP3 (SecDevTwin & SecDev services); contributes detection to WP4 (SecOpsTwin)
-- **Start TRL:** 4
+> Looking for the component/architecture description (C4 model, subcomponents,
+> interfaces)? See **[docs/overview.md](docs/overview.md)**.
 
-## 1. Overview
+---
 
-secAnoD is an AI-driven network anomaly and attack detection component that combines deep
-packet inspection, rule-based detection, and LLM/SLM-based detection to identify cybersecurity
-incidents in monitored networks and to provide explainable alerts to downstream response and
-orchestration tools.
+## Available images
 
-- Detects anomalies, multi-stage (APT) attacks, and protocol misuse on monitored networks
-- Combines DPI + an LTL rule engine with LLM/SLM-based detection, classification, and prediction
-- Produces STIX-formatted alerts with priority levels (Critical / High / Medium / Low)
-- Provides explainable-AI (XAI) outputs including root-cause analysis
-- Feeds events and detections into the SecOpsTwin knowledge graph and triggers secAISOAR playbooks
+Each service lives under [`images/`](images/) and is built and published
+independently by CI.
 
-**Background:** secAnoD builds on Montimage's existing MMT toolchain — `mmt-probe`, `mmt-dpi`,
-`mmt-security`, `mmt-plugin-generator`, and `mmt-operator` — extended with an **LLM Detection
-Engine**, an **API Gateway**, and an **XAI Module** developed within SECASSURED.
+| Image | What it does | Details |
+|-------|--------------|---------|
+| `mmt-image` | Offline **PCAP** analysis: runs `mmt-probe` (embedding `mmt-dpi` + `mmt-security`) over a capture and emits reports. | [images/mmt-image/README.md](images/mmt-image/README.md) |
 
-## 2. High-Level Description
+More services will be added over time; see [images/README.md](images/README.md)
+for the layout.
 
-secAnoD ingests raw traffic and pre-processed data, extracts protocol-level attributes, and
-applies hybrid (rule-based + AI/LLM) detection to surface security-relevant events.
+---
 
-- Ingests raw network data (PCAP, NetFlow, syslog, JSON) from the monitored network
-- Performs deep packet inspection and attribute extraction via `mmt-dpi`
-- Runs LTL rule-based attack and protocol anomaly detection via `mmt-security`
-- Hosts an LLM Detection Engine for anomaly classification, APT detection, and incident prediction
-- Generates new LTL rules from learned patterns as a feedback loop into the rule engine
-- Stores baselines, alerts, and training data in a time-series Event Store
-- Exposes alerts, statistics, and configuration via a FastAPI-based API Gateway
-- Provides explainability through a dedicated XAI Module (root-cause analysis)
-- Publishes alerts to secAISOAR (STIX) and events / knowledge-graph data to SecOpsTwin (JSON/Kafka)
+## Getting an image
 
-## 3. Position in the Architecture
+You can either **pull** a pre-built image from a registry or **build** it
+yourself.
 
-secAnoD operates as a detection layer between the monitored network and the higher-level
-twin/response components of the SECASSURED ecosystem.
+### Pull (recommended)
 
-**Upstream dependencies**
-- Monitored Network — raw PCAP, NetFlow, syslog, JSON traffic
-- Field-collected training data and curated benchmarks (offline ML lifecycle)
+Images are published on every push to `main` and on every `v*` tag.
 
-**Downstream dependencies**
-- **secAISOAR** (T4.4) — consumes alerts in STIX format to trigger incident-response playbooks
-- **SecOpsTwin** (T4.1) — consumes events and knowledge-graph updates (JSON/Kafka)
+**GitHub Container Registry (GHCR):**
 
-**Interaction with other components**
-- The Security Operator views alerts and XAI reports through the API Gateway / dashboards
-- Communicates with downstream SECASSURED components via REST APIs and the Kafka event bus
-- Receives feedback (training data, scenario data) used to refine models and LTL rules
+```bash
+docker pull ghcr.io/montimage-projects/mmt-image:latest
+```
 
-## 4. C4 Architecture
+**GitLab Container Registry** (the SECASSURED instance):
 
-- **Context (Level 1):** secAnoD within the SECASSURED ecosystem, interacting with the Security
-  Operator, the monitored network, and downstream systems (secAISOAR, SecOpsTwin).
-- **Container (Level 2):** the MMT-based capture and detection stack (`mmt-probe` embedding
-  `mmt-dpi` and `mmt-security`, with `mmt-plugin-generator` providing protocol parser plugins at
-  build time and `mmt-operator` the visualization layer), the LLM Detection Engine, the Event
-  Store, the API Gateway, and the XAI Module.
-- **Component (Level 3):** the internal structure of the LLM Detection Engine, separating the
-  **Offline ML Lifecycle** (model selection, golden dataset, evaluation/benchmarking, fine-tuning,
-  model registry) from the **Runtime Detection** path (M-Agent Orchestrator, Anomaly Classifier,
-  APT Detector, Incident Predictor, Rule Plugin Generator), with feedback to the rule engine via
-  newly generated LTL rules.
+```bash
+# <registry-host> is the Container Registry of this GitLab project
+docker pull <registry-host>/secassured/secassured-technical-components/secanod/mmt-image:latest
+```
 
-C4 diagrams are maintained in the reference architecture book (`secassured/architecture`, chapter
-`111_secAnoD`).
+Available tags: `latest` (default branch), the branch name, a short commit SHA
+(`sha-abc1234`), and — on releases — the version (`1.2.3`).
 
-## 5. Subcomponents
+### Build locally
 
-| # | Subcomponent | Role |
-|---|--------------|------|
-| 5.1 | **mmt-probe** (Capture & Detection Host) | Captures raw traffic / ingests pre-processed data; drives DPI and rule-based detection; forwards parsed events to the LLM Detection Engine and stats/alerts to mmt-operator |
-| 5.2 | **mmt-dpi** (Deep Packet Inspection) | Embedded C library; parses protocols, extracts attributes, loads parser plugins (`.so`) |
-| 5.3 | **mmt-security** (LTL Rule Engine) | Embedded C library; evaluates LTL rules over attribute streams; accepts generated rules (feedback loop) |
-| 5.4 | **mmt-plugin-generator** (Offline Tool) | Java tool generating protocol parser plugins (`.so`) consumed by mmt-dpi |
-| 5.5 | **mmt-operator** (Visualization) | JS web app; persists stats/alerts, provides dashboards and probe management |
-| 5.6 | **LLM Detection Engine** | Python/PyTorch; Offline ML Lifecycle (model selection, golden dataset, evaluation, fine-tuning via LoRA/QLoRA/PEFT, model registry) + Runtime Detection (M-Agent Orchestrator, Anomaly Classifier, APT Detector, Incident Predictor, Rule Plugin Generator) |
-| 5.7 | **Event Store** | Time-series DB for baselines, alerts, and training data |
-| 5.8 | **API Gateway** | FastAPI; REST endpoints for alerts/stats/config; egress of STIX alerts to secAISOAR |
-| 5.9 | **XAI Module** | Python; root-cause analysis and human-readable explanations; events/KG data to SecOpsTwin |
+```bash
+git clone https://github.com/montimage-projects/secanod.git
+cd secanod
+docker build -t mmt-image images/mmt-image
+```
 
-## 6. Interfaces & APIs
+The build compiles the MMT modules from source on `ubuntu:24.04` in the
+mandatory order **mmt-dpi → mmt-security → mmt-probe**. See the
+[image README](images/mmt-image/README.md#build) for build arguments (pinning
+module versions, enabling extra output channels).
 
-Inter-component communication within SECASSURED uses a common distributed event-streaming
-platform (Apache Kafka) as the primary middleware, with REST APIs for direct interactions.
+---
 
-**Inbound**
-- Raw network data (PCAP, NetFlow, syslog, JSON) from the monitored network
-- Cleaned / pre-processed events (masked, normalized)
-- REST APIs for configuration and requests
-- Kafka topics for events and analysis outputs from SECASSURED components
-- Field-collected training data for the offline ML lifecycle
+## Quick start — analyze a PCAP with `mmt-image`
 
-**Outbound**
-- Alerts in STIX format to secAISOAR (priority: Critical / High / Medium / Low)
-- Events and knowledge-graph updates to SecOpsTwin (JSON / Kafka)
-- REST APIs exposing alerts, statistics, and configuration to operators
-- XAI reports (root-cause analysis, explanations)
-- Newly generated LTL rules published back into mmt-security (internal feedback loop)
+The image exposes a single command. Mount an input directory (your captures)
+and an output directory (for the reports), then point it at a `.pcap`:
 
-## 7. Repository Layout
+```bash
+mkdir -p in out
+cp /path/to/capture.pcap in/
+
+docker run --rm \
+    -v "$PWD/in:/data/input:ro" \
+    -v "$PWD/out:/data/output" \
+    ghcr.io/montimage-projects/mmt-image:latest \
+    -p /data/input/capture.pcap \
+    -o /data/output \
+    -l /data/output/run.log
+```
+
+- `-p` — the PCAP to analyze (offline mode).
+- `-o` — directory where `mmt-probe` writes its report files (CSV).
+- `-l` — (optional) also capture `mmt-probe`'s runtime log to a file.
+
+After it runs, `out/` contains the CSV report(s) and, if requested, `run.log`.
+
+```
+out/
+├── 1783665335.625120_0_data.csv   # mmt-probe report
+├── 1783665335.625120_0_data.csv.sem
+└── run.log
+```
+
+### Other output channels
+
+By default reports are written to files. `mmt-probe` also supports Redis, Kafka,
+MongoDB and socket outputs — select them with `-X <section>.<attr>=<value>`
+overrides (the image must be built with the matching module):
+
+```bash
+docker run --rm -v "$PWD/in:/data/input:ro" \
+    ghcr.io/montimage-projects/mmt-image:latest \
+    -p /data/input/capture.pcap --no-file-output \
+    -X redis-output.enable=true -X redis-output.hostname=redis
+```
+
+See [images/mmt-image/README.md](images/mmt-image/README.md) for the full option
+reference, the list of channels/modules, and `--raw` (direct `mmt-probe`
+control).
+
+### Inspect the bundled tools
+
+```bash
+# print mmt-probe / mmt-dpi / mmt-security versions
+docker run --rm --entrypoint mmt-probe ghcr.io/montimage-projects/mmt-image:latest -v
+
+# show the wrapper help
+docker run --rm ghcr.io/montimage-projects/mmt-image:latest --help
+```
+
+---
+
+## How images are built and published (CI)
+
+Both pipelines build every image under `images/*`, run its smoke test on each
+change, and publish to their respective registries on `main` and `v*` tags:
+
+| Pipeline | Config | Registry |
+|----------|--------|----------|
+| GitHub Actions | [`.github/workflows/images.yml`](.github/workflows/images.yml) | GHCR |
+| GitLab CI | [`.gitlab-ci.yml`](.gitlab-ci.yml) | GitLab Container Registry |
+
+Pull requests / merge requests build and smoke-test the image but do **not**
+publish it.
+
+---
+
+## Repository layout
 
 ```
 .
-└── README.md        # this file
+├── README.md                 # this guide
+├── docs/
+│   └── overview.md           # secAnoD component & architecture description
+├── images/                   # one directory per service image
+│   ├── README.md
+│   └── mmt-image/
+│       ├── Dockerfile
+│       ├── entrypoint.sh
+│       ├── README.md
+│       └── tests/
+├── .github/workflows/images.yml
+└── .gitlab-ci.yml
 ```
 
-Source code, deployment manifests, and detection models will be added under this repository as
-development progresses.
+---
 
-## Authors & Acknowledgment
+## About
 
-Developed by **MONTIMAGE (MTI)**, **NTNU**, and **TECNALIA (TEC)** within the SECASSURED project.
-
-The SECASSURED project has received funding from the European Union's Horizon Europe research and
-innovation programme under grant agreement No. **101225858**.
-
-## License
-
-See the project consortium agreement. License to be confirmed with the coordinator (SINTEF).
+- **Project:** [SECASSURED](https://secureflow.assist.ro/secassured) (Horizon Europe, GA No. 101225858)
+- **Developed by:** MONTIMAGE (MTI), NTNU, TECNALIA (TEC)
+- **Built on:** [mmt-dpi](https://github.com/montimage/mmt-dpi) ·
+  [mmt-security](https://github.com/montimage/mmt-security) ·
+  [mmt-probe](https://github.com/montimage/mmt-probe)
