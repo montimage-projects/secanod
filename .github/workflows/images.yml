@@ -1,7 +1,12 @@
 name: images
 
 # Build, smoke-test and (on main/tags) publish the MMT service images under
-# images/*. Adding a new service is a one-line change to the matrix below.
+# images/*. Each image is built *natively* on a per-architecture runner, then
+# the per-arch images are merged into a single multi-arch manifest so that
+# `docker pull` works on both linux/amd64 and linux/arm64 hosts.
+#
+# Adding a new service is a one-line change to the `image` matrix (in both the
+# build and merge jobs).
 
 on:
   push:
@@ -20,9 +25,13 @@ concurrency:
   group: images-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  REGISTRY: ghcr.io
+
 jobs:
+  # --- build + smoke-test each image on a native runner, one job per arch ---
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -31,35 +40,44 @@ jobs:
       matrix:
         # One entry per service image. Extend this list for future services.
         image: [mmt-image]
-    env:
-      REGISTRY: ghcr.io
-      LOCAL_TAG: ${{ matrix.image }}:ci
+        # Build natively on each architecture (no QEMU emulation).
+        platform: [linux/amd64, linux/arm64]
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare platform label
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+        env:
+          platform: ${{ matrix.platform }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (load locally for testing)
+      - name: Build image (load locally for smoke test)
         uses: docker/build-push-action@v6
         with:
           context: images/${{ matrix.image }}
           load: true
-          tags: ${{ env.LOCAL_TAG }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          tags: ${{ matrix.image }}:ci
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ env.PLATFORM_PAIR }}
 
       - name: Smoke test
         run: |
           if [ -x "images/${{ matrix.image }}/tests/smoke-test.sh" ]; then
-            IMAGE="${{ env.LOCAL_TAG }}" images/${{ matrix.image }}/tests/smoke-test.sh
+            IMAGE="${{ matrix.image }}:ci" images/${{ matrix.image }}/tests/smoke-test.sh
           else
             echo "No smoke-test.sh for ${{ matrix.image }}, running --help only"
-            docker run --rm "${{ env.LOCAL_TAG }}" --help
+            docker run --rm "${{ matrix.image }}:ci" --help
           fi
 
-      # --- publish to GHCR on main and tags (never on PRs) ---
+      # --- publish the per-arch image by digest on main and tags (never PRs) ---
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -68,8 +86,64 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata (tags & labels)
+      - name: Build & push by digest
         if: github.event_name != 'pull_request'
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: images/${{ matrix.image }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ env.PLATFORM_PAIR }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # --- merge the per-arch digests into one multi-arch manifest and tag it ---
+  merge:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [mmt-image]
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (tags & labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -80,13 +154,14 @@ jobs:
             type=semver,pattern={{version}}
             type=sha,format=short
 
-      - name: Build & push
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v6
-        with:
-          context: images/${{ matrix.image }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}@sha256:%s ' *)
+
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect \
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.meta.outputs.version }}
