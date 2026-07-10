@@ -1,0 +1,92 @@
+name: images
+
+# Build, smoke-test and (on main/tags) publish the MMT service images under
+# images/*. Adding a new service is a one-line change to the matrix below.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "images/**"
+      - ".github/workflows/images.yml"
+  pull_request:
+    paths:
+      - "images/**"
+      - ".github/workflows/images.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per service image. Extend this list for future services.
+        image: [mmt-image]
+    env:
+      REGISTRY: ghcr.io
+      LOCAL_TAG: ${{ matrix.image }}:ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (load locally for testing)
+        uses: docker/build-push-action@v6
+        with:
+          context: images/${{ matrix.image }}
+          load: true
+          tags: ${{ env.LOCAL_TAG }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Smoke test
+        run: |
+          if [ -x "images/${{ matrix.image }}/tests/smoke-test.sh" ]; then
+            IMAGE="${{ env.LOCAL_TAG }}" images/${{ matrix.image }}/tests/smoke-test.sh
+          else
+            echo "No smoke-test.sh for ${{ matrix.image }}, running --help only"
+            docker run --rm "${{ env.LOCAL_TAG }}" --help
+          fi
+
+      # --- publish to GHCR on main and tags (never on PRs) ---
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (tags & labels)
+        if: github.event_name != 'pull_request'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,format=short
+
+      - name: Build & push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: images/${{ matrix.image }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
