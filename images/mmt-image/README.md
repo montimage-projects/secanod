@@ -24,10 +24,16 @@ libraries `mmt-probe` links.
 
 | ARG | Default | Purpose |
 |-----|---------|---------|
-| `MMT_DPI_REF` | `main` | git ref (branch/tag/commit) of mmt-dpi |
-| `MMT_SECURITY_REF` | `main` | git ref of mmt-security |
-| `MMT_PROBE_REF` | `main` | git ref of mmt-probe |
+| `MMT_DPI_REF` | `6b1c9f53…` (commit) | git branch, tag or commit of mmt-dpi |
+| `MMT_SECURITY_REF` | `v1.2.20` | git branch, tag or commit of mmt-security |
+| `MMT_PROBE_REF` | `main` | git branch, tag or commit of mmt-probe |
 | `MMT_PROBE_MODULES` | `SECURITY_MODULE PCAP_DUMP_MODULE SOCKET_MODULE QOS_MODULE` | mmt-probe modules to compile in |
+
+The three refs default to the versions upstream `mmt-probe` validates against in
+[`script/install-from-source.sh`](https://github.com/montimage/mmt-probe/blob/main/script/install-from-source.sh).
+They are not arbitrary: `mmt-dpi` `main` has since moved symbols out of
+`libmmt_core` that `mmt-probe` links directly, so overriding `MMT_DPI_REF` with a
+newer ref breaks the probe link step.
 
 The default module set needs **no** third-party source libraries, so the image
 builds quickly and reliably. To enable the Redis / Kafka / MongoDB / MQTT output

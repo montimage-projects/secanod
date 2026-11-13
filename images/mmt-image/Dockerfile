@@ -17,10 +17,19 @@ FROM ubuntu:24.04 AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Git refs are pinned to "main" by default but overridable so a build can be
-# reproduced against a specific commit/tag of each module.
-ARG MMT_DPI_REF=main
-ARG MMT_SECURITY_REF=main
+# Git refs default to the versions upstream mmt-probe validates against (see
+# mmt-probe/script/install-from-source.sh) and stay overridable so a build can
+# be pinned to a branch, tag or commit. Each module is fetched with
+# `git fetch <ref>` rather than `git clone --branch`, because upstream pins
+# mmt-dpi to a commit and `--branch` only accepts named refs.
+#
+# Do NOT default mmt-dpi to "main": mmt-dpi v1.10 moved the application/content
+# classification helpers out of libmmt_core into libmmt_tcpip, which probe does
+# not link (it only does so in STATIC_LINK mode), so building probe against DPI
+# main fails with undefined references to
+# get_application_class_by_protocol_id and get_content_class_by_content_flags.
+ARG MMT_DPI_REF=6b1c9f5380a4db616c90bec3cfeda72bce5920a0
+ARG MMT_SECURITY_REF=v1.2.20
 ARG MMT_PROBE_REF=main
 
 # mmt-probe output/feature modules to compile in. The default set needs NO
@@ -40,20 +49,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 
 # --- mmt-dpi (must be built first: provides libmmt_core + generated headers) ---
-RUN git clone --depth 1 --branch "${MMT_DPI_REF}" https://github.com/montimage/mmt-dpi.git mmt-dpi \
+RUN git init mmt-dpi \
+    && git -C mmt-dpi remote add origin https://github.com/montimage/mmt-dpi.git \
+    && git -C mmt-dpi fetch --depth 1 origin "${MMT_DPI_REF}" \
+    && git -C mmt-dpi checkout --detach FETCH_HEAD \
     && make -C mmt-dpi/sdk -j "$(nproc)" \
     && make -C mmt-dpi/sdk install \
     && ldconfig
 
 # --- mmt-security (needs mmt-dpi headers; must build single-threaded) ---
-RUN git clone --depth 1 --branch "${MMT_SECURITY_REF}" https://github.com/montimage/mmt-security.git mmt-security \
+RUN git init mmt-security \
+    && git -C mmt-security remote add origin https://github.com/montimage/mmt-security.git \
+    && git -C mmt-security fetch --depth 1 origin "${MMT_SECURITY_REF}" \
+    && git -C mmt-security checkout --detach FETCH_HEAD \
     && make -C mmt-security clean-all \
     && make -C mmt-security -j1 \
     && make -C mmt-security install \
     && ldconfig
 
 # --- mmt-probe (built last; links mmt-dpi + mmt-security) ---
-RUN git clone --depth 1 --branch "${MMT_PROBE_REF}" https://github.com/montimage/mmt-probe.git mmt-probe \
+RUN git init mmt-probe \
+    && git -C mmt-probe remote add origin https://github.com/montimage/mmt-probe.git \
+    && git -C mmt-probe fetch --depth 1 origin "${MMT_PROBE_REF}" \
+    && git -C mmt-probe checkout --detach FETCH_HEAD \
     && make -C mmt-probe -j "$(nproc)" ${MMT_PROBE_MODULES} compile \
     && make -C mmt-probe ${MMT_PROBE_MODULES} install \
     && ldconfig
